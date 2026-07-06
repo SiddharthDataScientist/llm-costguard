@@ -5,12 +5,21 @@ question has already been answered recently.
 Written in pure Python (no numpy) so we don't fight Python 3.14 wheel issues.
 For a weekend project's cache size (dozens to low hundreds of entries), this
 is plenty fast — no need for a real vector index yet.
+
+Note on mock mode: real OpenAI embeddings genuinely understand meaning, so
+paraphrases score very high (0.90+) and unrelated topics score low. A fake
+embedding can't replicate that — our first two attempts (hash-into-vector,
+at 32 and then 256 dims) both turned out biased by prompt length rather than
+topic, which produced false cache hits between totally unrelated questions.
+Direct word-overlap (Jaccard similarity) is a more honest mock: it directly
+measures "how many words do these two questions actually share," which is a
+much closer proxy for "are these about the same thing" than a lossy hash.
 """
 
 import os
+import re
 import math
 import time
-import hashlib
 from dataclasses import dataclass, field
 from openai import OpenAI
 
@@ -18,12 +27,17 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 MAX_CACHE_SIZE = 200  # oldest entries get evicted past this, so the cache doesn't grow forever
 MOCK_MODE = os.getenv("MOCK_MODE", "true").lower() == "true"
 
-# Real OpenAI embeddings cluster paraphrases very high (0.90+), but our mock
-# word-hash embedding has a much smaller effective range (confirmed by testing:
-# similar pair ~0.35, unrelated pair ~0.0). Use a lower threshold in mock mode
-# so cache-hit logic is actually testable; switch to the real threshold once
-# MOCK_MODE=false and real embeddings are in play.
-SIMILARITY_THRESHOLD = 0.25 if MOCK_MODE else 0.90
+# Real embeddings (cosine similarity) cluster true paraphrases very high (0.90+).
+# Mock mode uses Jaccard word-overlap instead, which lives on a 0-1 scale with
+# different behavior — tuned against real measurements (paraphrase ~0.75,
+# unrelated ~0.0), so 0.3 gives comfortable margin on both sides.
+SIMILARITY_THRESHOLD = 0.3 if MOCK_MODE else 0.90
+
+_STOPWORDS = {
+    "a", "an", "the", "is", "are", "what", "what's", "how", "do", "does", "i",
+    "of", "in", "on", "for", "to", "with", "and", "or", "you", "your", "would",
+    "should", "it", "this", "that", "be", "can", "will",
+}
 
 _client = None
 
@@ -38,45 +52,40 @@ def get_client() -> OpenAI:
 @dataclass
 class CacheEntry:
     prompt: str
-    embedding: list
+    embedding: object  # frozenset of tokens in mock mode, list of floats for real embeddings
     response_text: str
     model_used: str
     created_at: float = field(default_factory=time.time)
 
 
-# In-memory store for now. Swaps to Firestore-backed persistence during deployment (step 6+/Sunday).
+# In-memory store for now. Swaps to Firestore-backed persistence during deployment (Sunday).
 _cache_store: list = []
 
 
-def _stable_hash(word: str) -> int:
-    """Deterministic hash — unlike Python's built-in hash(), this gives the
-    same value every run/process, so mock embeddings are reproducible."""
-    return int(hashlib.md5(word.encode("utf-8")).hexdigest(), 16)
-
-
-def _mock_embedding(text: str) -> list:
+def _mock_embedding(text: str):
     """
-    Deterministic fake embedding for mock mode: hashes words into a small
-    fixed-size vector so identical/similar text produces similar vectors,
-    without calling the real embeddings API.
+    Returns the set of meaningful (non-stopword) tokens in the text.
+    Used with Jaccard similarity instead of cosine — see module docstring for why.
     """
-    dims = 32
-    vec = [0.0] * dims
-    for word in text.lower().split():
-        idx = _stable_hash(word) % dims
-        vec[idx] += 1.0
-    # normalize
-    norm = math.sqrt(sum(v * v for v in vec)) or 1.0
-    return [v / norm for v in vec]
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return frozenset(w for w in words if w not in _STOPWORDS)
 
 
-def embed(text: str) -> list:
+def embed(text: str):
     if MOCK_MODE:
         return _mock_embedding(text)
 
     client = get_client()
     response = client.embeddings.create(model=EMBEDDING_MODEL, input=text)
     return response.data[0].embedding
+
+
+def _jaccard_similarity(a: frozenset, b: frozenset) -> float:
+    if not a or not b:
+        return 0.0
+    intersection = len(a & b)
+    union = len(a | b)
+    return intersection / union if union else 0.0
 
 
 def _cosine_similarity(a: list, b: list) -> float:
@@ -86,6 +95,12 @@ def _cosine_similarity(a: list, b: list) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+def _similarity(a, b) -> float:
+    if MOCK_MODE:
+        return _jaccard_similarity(a, b)
+    return _cosine_similarity(a, b)
 
 
 def check_cache(prompt: str) -> CacheEntry | None:
@@ -101,7 +116,7 @@ def check_cache(prompt: str) -> CacheEntry | None:
     best_entry = None
     best_score = 0.0
     for entry in _cache_store:
-        score = _cosine_similarity(query_embedding, entry.embedding)
+        score = _similarity(query_embedding, entry.embedding)
         if score > best_score:
             best_score = score
             best_entry = entry
