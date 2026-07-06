@@ -1,0 +1,18 @@
+{"prompt": "What's the syntax for a Python list comprehension?", "expected_model": "gpt-4o-mini"}
+{"prompt": "How do I check if a key exists in a JavaScript object?", "expected_model": "gpt-4o-mini"}
+{"prompt": "What does the git stash command do?", "expected_model": "gpt-4o-mini"}
+{"prompt": "How do I convert a string to an integer in Python?", "expected_model": "gpt-4o-mini"}
+{"prompt": "What's the difference between let and const in JavaScript?", "expected_model": "gpt-4o-mini"}
+{"prompt": "How do I install a package with pip?", "expected_model": "gpt-4o-mini"}
+{"prompt": "What HTTP status code means not found?", "expected_model": "gpt-4o-mini"}
+{"prompt": "How do I comment out multiple lines in Python?", "expected_model": "gpt-4o-mini"}
+{"prompt": "Design a database schema for a multi-tenant SaaS app with row-level isolation, what are the tradeoffs between separate schemas vs a tenant_id column?", "expected_model": "gpt-4o"}
+{"prompt": "Why might a Python FastAPI app under load show increasing latency even though CPU usage stays low?", "expected_model": "gpt-4o"}
+{"prompt": "Walk through the tradeoffs between optimistic and pessimistic locking for a booking system with high concurrency.", "expected_model": "gpt-4o"}
+{"prompt": "I'm getting an intermittent race condition in a multithreaded Go program, what's my debugging strategy?", "expected_model": "gpt-4o"}
+{"prompt": "Explain how you'd design a rate limiter for a public API serving 10k requests per second across multiple regions.", "expected_model": "gpt-4o"}
+{"prompt": "What are the tradeoffs between REST and GraphQL for a mobile app with poor network conditions?", "expected_model": "gpt-4o"}
+{"prompt": "How would you migrate a monolith to microservices without downtime?", "expected_model": "gpt-4o"}
+{"prompt": "What's the time complexity of Python's built-in sort, and why?", "expected_model": "gpt-4o-mini"}
+{"prompt": "Explain the difference between SQL JOIN types with an example.", "expected_model": "gpt-4o-mini"}
+{"prompt": "How does garbage collection work in Java?", "expected_model": "gpt-4o-mini"}
