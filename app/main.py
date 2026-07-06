@@ -16,12 +16,18 @@ from pydantic import BaseModel
 from app.cache import check_cache, add_to_cache
 from app.router import route
 from app.openai_client import get_completion
+from app.logging_store import init_db, log_request
 
 app = FastAPI(
     title="LLM-CostGuard",
     description="A cost/quality-optimizing proxy for OpenAI chat completions.",
     version="0.1.0",
 )
+
+
+@app.on_event("startup")
+def startup():
+    init_db()
 
 
 @app.get("/health")
@@ -51,6 +57,10 @@ def chat(request: ChatRequest):
     cached = check_cache(request.prompt)
     if cached is not None:
         latency_ms = (time.perf_counter() - start) * 1000
+        log_request(
+            prompt=request.prompt, model_used=cached.model_used, cache_hit=True,
+            cost_usd=0.0, latency_ms=latency_ms, routing_reason="served from semantic cache",
+        )
         return ChatResponse(
             response=cached.response_text,
             model_used=cached.model_used,
@@ -71,6 +81,10 @@ def chat(request: ChatRequest):
     add_to_cache(request.prompt, result.text, model)
 
     latency_ms = (time.perf_counter() - start) * 1000
+    log_request(
+        prompt=request.prompt, model_used=model, cache_hit=False,
+        cost_usd=result.cost_usd, latency_ms=latency_ms, routing_reason=routing_decision["reason"],
+    )
     return ChatResponse(
         response=result.text,
         model_used=model,
