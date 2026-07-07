@@ -1,65 +1,72 @@
 """
-Logs every /chat request to a local SQLite file: model used, cost, latency,
-cache hit/miss, and the prompt itself. This is what the eval harness and the
-dashboard will read from.
+Logs every /chat request to Firestore: model used, cost, latency, cache
+hit/miss, and the prompt itself. This is what the eval harness and the
+dashboard read from.
 
-Local SQLite today; swaps to Firestore during deployment (Sunday) since
-Cloud Run instances are stateless and a local file won't persist there.
+Switched from local SQLite (Saturday) to Firestore because Cloud Run
+containers are stateless — a local file gets wiped on every restart/scale
+event, so logs would silently vanish in production. Firestore persists
+independently of the container lifecycle and stays within GCP's free tier
+for this project's scale.
 """
 
-import sqlite3
+import os
 import time
-from contextlib import contextmanager
+from google.cloud import firestore
 
-DB_PATH = "costguard.db"
+COLLECTION_NAME = "requests"
+
+_db = None
+
+
+def get_db():
+    """Lazily create the Firestore client. Uses Application Default
+    Credentials — locally via `gcloud auth application-default login`,
+    automatically via the service account when running on Cloud Run."""
+    global _db
+    if _db is None:
+        project_id = os.getenv("GCP_PROJECT_ID")
+        _db = firestore.Client(project=project_id) if project_id else firestore.Client()
+    return _db
 
 
 def init_db():
-    with _get_conn() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                prompt TEXT NOT NULL,
-                model_used TEXT NOT NULL,
-                cache_hit INTEGER NOT NULL,
-                cost_usd REAL NOT NULL,
-                latency_ms REAL NOT NULL,
-                routing_reason TEXT,
-                created_at REAL NOT NULL
-            )
-        """)
-
-
-@contextmanager
-def _get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
+    """No schema setup needed for Firestore (schemaless), but we keep this
+    function so main.py's startup hook doesn't need to change."""
+    pass
 
 
 def log_request(prompt: str, model_used: str, cache_hit: bool, cost_usd: float,
                  latency_ms: float, routing_reason: str):
-    with _get_conn() as conn:
-        conn.execute(
-            """INSERT INTO requests (prompt, model_used, cache_hit, cost_usd, latency_ms, routing_reason, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (prompt, model_used, int(cache_hit), cost_usd, latency_ms, routing_reason, time.time()),
-        )
+    db = get_db()
+    db.collection(COLLECTION_NAME).add({
+        "prompt": prompt,
+        "model_used": model_used,
+        "cache_hit": cache_hit,
+        "cost_usd": cost_usd,
+        "latency_ms": latency_ms,
+        "routing_reason": routing_reason,
+        "created_at": time.time(),
+    })
 
 
 def get_summary_stats() -> dict:
-    """Aggregate stats used by the dashboard and eval harness."""
-    with _get_conn() as conn:
-        total = conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
-        cache_hits = conn.execute("SELECT COUNT(*) FROM requests WHERE cache_hit = 1").fetchone()[0]
-        total_cost = conn.execute("SELECT COALESCE(SUM(cost_usd), 0) FROM requests").fetchone()[0]
-        avg_latency = conn.execute("SELECT COALESCE(AVG(latency_ms), 0) FROM requests").fetchone()[0]
-        model_breakdown = conn.execute(
-            "SELECT model_used, COUNT(*) FROM requests GROUP BY model_used"
-        ).fetchall()
+    """Aggregate stats used by the dashboard and eval harness.
+    Reads all documents and aggregates in Python — fine at this project's
+    scale (dozens-hundreds of requests); a production version at high
+    volume would use Firestore aggregation queries instead."""
+    db = get_db()
+    docs = list(db.collection(COLLECTION_NAME).stream())
+
+    total = len(docs)
+    cache_hits = sum(1 for d in docs if d.to_dict().get("cache_hit"))
+    total_cost = sum(d.to_dict().get("cost_usd", 0.0) for d in docs)
+    avg_latency = sum(d.to_dict().get("latency_ms", 0.0) for d in docs) / total if total else 0.0
+
+    model_breakdown = {}
+    for d in docs:
+        model = d.to_dict().get("model_used", "unknown")
+        model_breakdown[model] = model_breakdown.get(model, 0) + 1
 
     return {
         "total_requests": total,
@@ -67,20 +74,12 @@ def get_summary_stats() -> dict:
         "cache_hit_rate": round(cache_hits / total, 3) if total else 0.0,
         "total_cost_usd": round(total_cost, 6),
         "avg_latency_ms": round(avg_latency, 1),
-        "model_breakdown": dict(model_breakdown),
+        "model_breakdown": model_breakdown,
     }
 
 
 def get_all_requests() -> list:
     """Used by the dashboard to plot cost/latency over time."""
-    with _get_conn() as conn:
-        rows = conn.execute(
-            "SELECT prompt, model_used, cache_hit, cost_usd, latency_ms, routing_reason, created_at FROM requests ORDER BY created_at"
-        ).fetchall()
-    return [
-        {
-            "prompt": r[0], "model_used": r[1], "cache_hit": bool(r[2]),
-            "cost_usd": r[3], "latency_ms": r[4], "routing_reason": r[5], "created_at": r[6],
-        }
-        for r in rows
-    ]
+    db = get_db()
+    docs = db.collection(COLLECTION_NAME).order_by("created_at").stream()
+    return [d.to_dict() for d in docs]
