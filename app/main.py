@@ -10,6 +10,10 @@ The core request flow:
 """
 
 import time
+from dotenv import load_dotenv
+
+load_dotenv()  # must run before importing modules that read env vars at import time
+
 from fastapi import FastAPI
 from pydantic import BaseModel
 

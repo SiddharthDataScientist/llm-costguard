@@ -6,3 +6,4 @@ pydantic==2.9.2
 google-cloud-firestore==2.19.0
 streamlit==1.39.0
 pandas==2.2.3
+pytest==8.3.3
