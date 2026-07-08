@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Dashboard needs app/ too, since it imports app.logging_store
+COPY app/ ./app/
+COPY dashboard/ ./dashboard/
+
+ENV PORT=8080
+EXPOSE 8080
+
+CMD exec streamlit run dashboard/app.py --server.port=${PORT} --server.address=0.0.0.0 --server.headless=true
